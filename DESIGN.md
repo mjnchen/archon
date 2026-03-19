@@ -357,6 +357,25 @@ rate limits.
 
 ---
 
+## Implementation Status (v0.1)
+
+| # | Requirement | Status | Module(s) |
+|---|-------------|--------|-----------|
+| 1 | Observability & Raw HTTP JSON Logging | **Implemented** | `observer.py` |
+| 2 | Tool/Function Calling (OpenAI + MCP) | **Implemented** | `tools.py` |
+| 3 | Agent Loop Patterns (ReAct + Handover) | **Implemented** | `agent.py`, `orchestrator.py` |
+| 4 | Structured State / Conversation Mgmt | **Implemented** | `state.py` |
+| 5 | Audit Trail | **Implemented** | `audit.py` |
+| 6 | Human-in-the-Loop | **Implemented** | `hitl.py` |
+| 7 | Guardrails | **Implemented** | `guardrails.py` |
+| 8 | Multi-Tenancy & Access Control | **Implemented** | `access.py`, `types.py` |
+| 9 | Multi-Agent Orchestration | **Implemented** | `orchestrator.py` |
+| 10 | State Persistence & Checkpointing | Planned | — (Netflix Conductor / Temporal) |
+| 11 | Evaluation & Testing | Planned | — (replay from logged JSON) |
+| 12 | Rate Limiting & Budget Controls | Planned | — (LiteLLM router covers most of this) |
+
+---
+
 ## Cross-Cutting Concerns
 
 These apply across all requirements:
