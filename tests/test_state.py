@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from archon.state import AgentState
-from archon.types import AgentConfig
+from archon.types import AgentConfig, ArchonMessage
 
 
 class TestSerialization:
@@ -15,7 +15,7 @@ class TestSerialization:
         state = AgentState(agent_name="test")
         state.add_system("You are helpful.")
         state.add_user("Hello")
-        state.add_assistant({"role": "assistant", "content": "Hi there!"})
+        state.add_assistant(ArchonMessage(role="assistant", content="Hi there!"))
 
         path = tmp_path / "state.json"
         state.save(path)
@@ -23,9 +23,9 @@ class TestSerialization:
 
         assert loaded.agent_name == "test"
         assert len(loaded.messages) == 3
-        assert loaded.messages[0]["role"] == "system"
-        assert loaded.messages[1]["content"] == "Hello"
-        assert loaded.messages[2]["content"] == "Hi there!"
+        assert loaded.messages[0].role == "system"
+        assert loaded.messages[1].content == "Hello"
+        assert loaded.messages[2].content == "Hi there!"
 
     def test_should_preserve_run_id(self, tmp_path: Path):
         state = AgentState(run_id="abc123")
@@ -77,21 +77,21 @@ class TestMessageHelpers:
         state = AgentState()
         state.add_user("Hello")
         state.add_system("System prompt")
-        assert state.messages[0]["role"] == "system"
-        assert state.messages[1]["role"] == "user"
+        assert state.messages[0].role == "system"
+        assert state.messages[1].role == "user"
 
     def test_should_replace_existing_system(self):
         state = AgentState()
         state.add_system("V1")
         state.add_system("V2")
-        assert len([m for m in state.messages if m["role"] == "system"]) == 1
-        assert state.messages[0]["content"] == "V2"
+        assert len([m for m in state.messages if m.role == "system"]) == 1
+        assert state.messages[0].content == "V2"
 
     def test_should_add_tool_result(self):
         state = AgentState()
         state.add_tool_result("call_123", "result data")
-        assert state.messages[-1]["role"] == "tool"
-        assert state.messages[-1]["tool_call_id"] == "call_123"
+        assert state.messages[-1].role == "tool"
+        assert state.messages[-1].tool_call_id == "call_123"
 
 
 class TestTruncation:
@@ -102,7 +102,7 @@ class TestTruncation:
             state.add_user(f"msg {i}")
         state.truncate(max_messages=5)
         assert len(state.messages) == 5
-        assert state.messages[0]["role"] == "system"
+        assert state.messages[0].role == "system"
 
     def test_should_noop_when_under_limit(self):
         state = AgentState()
@@ -114,12 +114,12 @@ class TestTruncation:
         state = AgentState()
         state.add_system("sys")
         state.add_user("q1")
-        state.add_assistant({"role": "assistant", "content": "a1"})
+        state.add_assistant(ArchonMessage(role="assistant", content="a1"))
         state.add_tool_result("c1", "r1")
         state.add_user("q2")
-        state.add_assistant({"role": "assistant", "content": "a2"})
+        state.add_assistant(ArchonMessage(role="assistant", content="a2"))
 
         state.truncate(max_messages=4, strategy="sliding")
-        assert state.messages[0]["role"] == "system"
+        assert state.messages[0].role == "system"
         # Should not start the non-system part with a tool result
-        assert state.messages[1]["role"] != "tool"
+        assert state.messages[1].role != "tool"
