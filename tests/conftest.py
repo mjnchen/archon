@@ -1,71 +1,60 @@
-"""Shared test fixtures — mock LiteLLM responses and sample tools."""
+"""Shared test fixtures — build LLMResponse objects and sample tools."""
 
 from __future__ import annotations
 
 import json
 from typing import Any, Dict, List, Optional
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from archon.observer import ArchonLogger
+from archon.llm import LLMChoice, LLMResponse, LLMUsage
+from archon.types import ArchonMessage, ArchonToolCall
+from archon.observability import ArchonLogger
 from archon.tools import ToolRegistry
 from archon.types import AgentConfig
 
 
 # ---------------------------------------------------------------------------
-# Mock LiteLLM response objects
+# Response builders
 # ---------------------------------------------------------------------------
-
-def make_assistant_message(
-    content: Optional[str] = "Hello!",
-    tool_calls: Optional[List[Dict[str, Any]]] = None,
-) -> MagicMock:
-    """Build a mock assistant message (mirrors litellm's response.choices[0].message)."""
-    msg = MagicMock()
-    msg.content = content
-    msg.tool_calls = tool_calls
-    msg.model_dump.return_value = {
-        "role": "assistant",
-        "content": content,
-    }
-    if tool_calls:
-        msg.model_dump.return_value["tool_calls"] = [
-            {
-                "id": tc["id"],
-                "type": "function",
-                "function": {"name": tc["name"], "arguments": tc["arguments"]},
-            }
-            for tc in tool_calls
-        ]
-        mock_tcs = []
-        for tc in tool_calls:
-            mock_tc = MagicMock()
-            mock_tc.id = tc["id"]
-            mock_tc.function.name = tc["name"]
-            mock_tc.function.arguments = tc["arguments"]
-            mock_tcs.append(mock_tc)
-        msg.tool_calls = mock_tcs
-    return msg
-
 
 def make_completion_response(
     content: Optional[str] = "Hello!",
     tool_calls: Optional[List[Dict[str, Any]]] = None,
     prompt_tokens: int = 10,
     completion_tokens: int = 5,
-) -> MagicMock:
-    """Build a mock litellm.acompletion() return value."""
-    msg = make_assistant_message(content, tool_calls)
-    response = MagicMock()
-    response.choices = [MagicMock()]
-    response.choices[0].message = msg
-    response.usage = MagicMock()
-    response.usage.prompt_tokens = prompt_tokens
-    response.usage.completion_tokens = completion_tokens
-    response.usage.total_tokens = prompt_tokens + completion_tokens
-    response._hidden_params = {"response_cost": 0.001}
-    return response
+) -> LLMResponse:
+    """Build a real LLMResponse for use in tests.
+
+    tool_calls items: {"id": str, "name": str, "arguments": str (JSON)}
+    """
+    import json as _json
+
+    archon_tool_calls = None
+    if tool_calls:
+        archon_tool_calls = [
+            ArchonToolCall(
+                id=tc["id"],
+                name=tc["name"],
+                arguments=_json.loads(tc["arguments"]) if isinstance(tc["arguments"], str) else tc["arguments"],
+            )
+            for tc in tool_calls
+        ]
+
+    usage = LLMUsage(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=prompt_tokens + completion_tokens,
+    )
+    return LLMResponse(
+        choices=[LLMChoice(message=ArchonMessage(
+            role="assistant",
+            content=content,
+            tool_calls=archon_tool_calls,
+        ))],
+        usage=usage,
+        cost=0.001,
+    )
 
 
 # ---------------------------------------------------------------------------

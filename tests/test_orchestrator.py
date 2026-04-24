@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from archon.observer import ArchonLogger
+from archon.observability import ArchonLogger
 from archon.orchestrator import AgentRegistry, FanOut, Pipeline, Supervisor, run_with_handover
 from archon.tools import ToolRegistry
 from archon.types import AgentConfig
@@ -62,7 +62,7 @@ class TestPipeline:
         resp1 = make_completion_response(content="Research findings about climate.")
         resp2 = make_completion_response(content="Final report on climate change.")
 
-        with patch("litellm.acompletion", new_callable=AsyncMock, side_effect=[resp1, resp2]):
+        with patch("archon.llm.acompletion", new_callable=AsyncMock, side_effect=[resp1, resp2]):
             result = await pipeline.arun("Write about climate change")
 
         assert result.final_output == "Final report on climate change."
@@ -79,7 +79,7 @@ class TestFanOut:
         resp1 = make_completion_response(content="Analysis from researcher.")
         resp2 = make_completion_response(content="Analysis from writer.")
 
-        with patch("litellm.acompletion", new_callable=AsyncMock, side_effect=[resp1, resp2]):
+        with patch("archon.llm.acompletion", new_callable=AsyncMock, side_effect=[resp1, resp2]):
             result = await fanout.arun("Analyze Q3 earnings")
 
         assert len(result.agent_results) == 2
@@ -95,7 +95,7 @@ class TestFanOut:
         resp1 = make_completion_response(content="A")
         resp2 = make_completion_response(content="B")
 
-        with patch("litellm.acompletion", new_callable=AsyncMock, side_effect=[resp1, resp2]):
+        with patch("archon.llm.acompletion", new_callable=AsyncMock, side_effect=[resp1, resp2]):
             result = await fanout.arun("Test")
 
         assert result.final_output == "A | B"
@@ -124,7 +124,7 @@ class TestSupervisor:
         # Manager synthesizes final answer
         final_response = make_completion_response(content="Final synthesis of climate research.")
 
-        with patch("litellm.acompletion", new_callable=AsyncMock, side_effect=[
+        with patch("archon.llm.acompletion", new_callable=AsyncMock, side_effect=[
             delegate_response, worker_response, final_response
         ]):
             result = await supervisor.arun("Write a climate report")
