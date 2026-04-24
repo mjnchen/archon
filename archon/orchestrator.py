@@ -8,11 +8,9 @@ import logging
 from typing import Any, Callable, Coroutine, Dict, List, Optional
 
 from archon.agent import Agent
-from archon.audit import AuditTrail
 from archon.exceptions import HandoverRequest
-from archon.guardrails import GuardrailPipeline
-from archon.hitl import HumanApprovalManager
-from archon.observer import ArchonLogger
+from archon.observability import ArchonLogger, AuditTrail
+from archon.safety import GuardrailPipeline, HumanApprovalManager
 from archon.tools import ToolRegistry
 from archon.types import (
     AgentConfig,
@@ -90,18 +88,11 @@ MergeFn = Callable[[List[AgentResult]], str]
 
 
 def _default_merge(results: List[AgentResult]) -> str:
-    """Concatenate all agent outputs separated by double-newlines."""
     return "\n\n".join(r.output for r in results if r.output)
 
 
 class Pipeline:
-    """Sequential agent pipeline — output of one feeds into the next.
-
-    Usage::
-
-        pipeline = Pipeline(registry, ["researcher", "writer"], observer=obs)
-        result = await pipeline.arun("Write a report on climate change")
-    """
+    """Sequential agent pipeline — output of one feeds into the next."""
 
     def __init__(
         self,
@@ -156,17 +147,7 @@ class Pipeline:
 
 
 class FanOut:
-    """Parallel fan-out — all agents run concurrently on the same input, then merge.
-
-    Usage::
-
-        fanout = FanOut(
-            registry, ["analyst_a", "analyst_b"],
-            merge_fn=my_merge,
-            observer=obs,
-        )
-        result = await fanout.arun("Analyze Q3 earnings")
-    """
+    """Parallel fan-out — all agents run concurrently on the same input, then merge."""
 
     def __init__(
         self,
@@ -200,10 +181,7 @@ class FanOut:
             )
             for name in self.agent_names
         ]
-        tasks = [agent.arun(user_input) for agent in agents]
-        agent_results = await asyncio.gather(*tasks, return_exceptions=False)
-        agent_results = list(agent_results)
-
+        agent_results = list(await asyncio.gather(*[a.arun(user_input) for a in agents]))
         merged = self.merge_fn(agent_results)
         total_cost = sum(r.total_cost for r in agent_results)
         total_tokens = TokenUsage(
@@ -211,7 +189,6 @@ class FanOut:
             completion_tokens=sum(r.total_tokens.completion_tokens for r in agent_results),
             total_tokens=sum(r.total_tokens.total_tokens for r in agent_results),
         )
-
         return OrchestrationResult(
             final_output=merged,
             agent_results=agent_results,
@@ -224,22 +201,7 @@ class FanOut:
 
 
 class Supervisor:
-    """Supervisor pattern — a coordinator delegates sub-tasks to worker agents.
-
-    The coordinator agent is given a ``delegate_to`` tool that it uses to
-    invoke workers by name.  The supervisor collects worker results and feeds
-    them back to the coordinator until it produces a final answer.
-
-    Usage::
-
-        supervisor = Supervisor(
-            registry,
-            coordinator="manager",
-            workers=["researcher", "writer"],
-            observer=obs,
-        )
-        result = await supervisor.arun("Create a market analysis report")
-    """
+    """Supervisor pattern — a coordinator delegates sub-tasks to worker agents."""
 
     def __init__(
         self,
@@ -268,7 +230,6 @@ class Supervisor:
         total_cost = 0.0
         total_tokens = TokenUsage()
 
-        # Build coordinator with a delegate_to tool
         coord_tools = ToolRegistry()
         worker_names = self.workers
 
@@ -289,16 +250,12 @@ class Supervisor:
             agent_results.append(result)
             return result.output
 
-        # Merge coordinator's own tools with delegate_to
         if self.coordinator_name in self.registry._tools:
             coord_tools.merge(self.registry._tools[self.coordinator_name])
 
         coordinator = Agent(
             config=self.registry.get_config(self.coordinator_name).model_copy(
-                update={
-                    "max_iterations": self.max_delegations,
-                    "tool_names": [],  # use all tools
-                }
+                update={"max_iterations": self.max_delegations, "tool_names": []}
             ),
             tools=coord_tools,
             observer=self.observer,
@@ -317,7 +274,6 @@ class Supervisor:
             completion_tokens=sum(r.total_tokens.completion_tokens for r in agent_results),
             total_tokens=sum(r.total_tokens.total_tokens for r in agent_results),
         )
-
         return OrchestrationResult(
             final_output=coord_result.output,
             agent_results=agent_results,
@@ -344,11 +300,7 @@ async def run_with_handover(
     tenant: Optional[TenantContext] = None,
     max_handovers: int = 5,
 ) -> OrchestrationResult:
-    """Run agents with automatic handover support.
-
-    When an agent raises :class:`HandoverRequest`, control passes to the target
-    agent.  This repeats up to *max_handovers* times.
-    """
+    """Run agents with automatic handover support."""
     agent_results: List[AgentResult] = []
     current_agent = starting_agent
     current_input = user_input
@@ -384,7 +336,6 @@ async def run_with_handover(
         completion_tokens=sum(r.total_tokens.completion_tokens for r in agent_results),
         total_tokens=sum(r.total_tokens.total_tokens for r in agent_results),
     )
-
     return OrchestrationResult(
         final_output=agent_results[-1].output if agent_results else "",
         agent_results=agent_results,

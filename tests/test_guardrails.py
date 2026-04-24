@@ -3,7 +3,7 @@
 import pytest
 
 from archon.exceptions import GuardrailBlocked
-from archon.guardrails import (
+from archon.safety import (
     ContentPolicyGuardrail,
     DangerousToolCallGuardrail,
     GuardrailPipeline,

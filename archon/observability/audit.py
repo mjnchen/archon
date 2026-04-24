@@ -14,10 +14,6 @@ from archon.types import AuditEvent, AuditEventType, TenantContext
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Backend protocol
-# ---------------------------------------------------------------------------
-
 class AuditBackend(ABC):
     """Interface for audit event storage."""
 
@@ -40,10 +36,6 @@ class AuditBackend(ABC):
         fmt: Literal["json", "csv"] = "json",
     ) -> str: ...
 
-
-# ---------------------------------------------------------------------------
-# JSON-lines backend (dev / lightweight production)
-# ---------------------------------------------------------------------------
 
 class JsonLinesAuditBackend(AuditBackend):
     """Append-only JSON-lines file backend."""
@@ -84,11 +76,7 @@ class JsonLinesAuditBackend(AuditBackend):
                     break
         return events
 
-    async def export(
-        self,
-        trace_id: str,
-        fmt: Literal["json", "csv"] = "json",
-    ) -> str:
+    async def export(self, trace_id: str, fmt: Literal["json", "csv"] = "json") -> str:
         events = await self.query(trace_id=trace_id, limit=10_000)
         if fmt == "csv":
             header = "event_id,event_type,timestamp,trace_id,step_index,tenant_id,user_id\n"
@@ -102,10 +90,6 @@ class JsonLinesAuditBackend(AuditBackend):
             return header + "".join(rows)
         return json.dumps([e.model_dump(mode="json") for e in events], indent=2)
 
-
-# ---------------------------------------------------------------------------
-# In-memory backend (testing)
-# ---------------------------------------------------------------------------
 
 class InMemoryAuditBackend(AuditBackend):
     """Simple in-memory store for tests."""
@@ -136,25 +120,13 @@ class InMemoryAuditBackend(AuditBackend):
                 break
         return results
 
-    async def export(
-        self,
-        trace_id: str,
-        fmt: Literal["json", "csv"] = "json",
-    ) -> str:
+    async def export(self, trace_id: str, fmt: Literal["json", "csv"] = "json") -> str:
         events = await self.query(trace_id=trace_id, limit=10_000)
         return json.dumps([e.model_dump(mode="json") for e in events], indent=2)
 
 
-# ---------------------------------------------------------------------------
-# AuditTrail (high-level API used by Agent)
-# ---------------------------------------------------------------------------
-
 class AuditTrail:
     """High-level audit API that wraps a backend.
-
-    The ``Agent`` calls methods like ``record_run_started`` during execution;
-    the ``AuditTrail`` translates those to ``AuditEvent`` objects and persists
-    them through the backend.
 
     Usage::
 
@@ -178,7 +150,6 @@ class AuditTrail:
         tenant: Optional[TenantContext],
         data: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Fire-and-forget event recording (runs sync in background)."""
         import asyncio
 
         event = AuditEvent(
@@ -192,10 +163,8 @@ class AuditTrail:
             loop = asyncio.get_running_loop()
             loop.create_task(self.backend.record(event))
         except RuntimeError:
-            # No running loop — record synchronously via new loop
             asyncio.run(self.backend.record(event))
 
-    # Convenience methods called by Agent
     def record_run_started(self, run_id: str, agent_name: str, tenant: Optional[TenantContext]) -> None:
         self._emit(AuditEventType.RUN_STARTED, run_id, tenant, {"agent_name": agent_name})
 

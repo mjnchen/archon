@@ -2,16 +2,15 @@
 
 Run with:  poetry run python examples/weather_agent.py
 
-Requires OPENAI_API_KEY (or any LiteLLM-supported provider key) in the environment.
+Requires OPENAI_API_KEY in the environment (or ANTHROPIC_API_KEY / GEMINI_API_KEY for other providers).
 """
 
 import asyncio
 import json
 
 from archon.agent import Agent
-from archon.audit import AuditTrail, InMemoryAuditBackend
-from archon.guardrails import GuardrailPipeline, PIIDetector
-from archon.observer import ArchonLogger
+from archon.observability import AuditTrail, InMemoryAuditBackend, ArchonLogger
+from archon.safety import GuardrailPipeline, PIIDetector
 from archon.tools import ToolRegistry
 from archon.types import AgentConfig, TenantContext
 

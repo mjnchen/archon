@@ -11,6 +11,33 @@ from pydantic import BaseModel, Field
 
 
 # ---------------------------------------------------------------------------
+# Canonical message types (provider-neutral)
+# ---------------------------------------------------------------------------
+
+class ArchonToolCall(BaseModel):
+    """A tool invocation requested by the assistant."""
+    id: str
+    name: str
+    arguments: Dict[str, Any] = Field(default_factory=dict)  # always parsed, never a JSON string
+
+
+class ArchonMessage(BaseModel):
+    """Provider-neutral conversation message.
+
+    Each provider adapter converts between this type and its own wire format.
+    Role semantics:
+      system    — top-level instructions, never sent as a turn
+      user      — human turn (or injected tool results)
+      assistant — model turn, optionally containing tool_calls
+      tool      — tool execution result (identified by tool_call_id)
+    """
+    role: Literal["system", "user", "assistant", "tool"]
+    content: Optional[str] = None
+    tool_calls: Optional[List["ArchonToolCall"]] = None
+    tool_call_id: Optional[str] = None  # present only when role == "tool"
+
+
+# ---------------------------------------------------------------------------
 # Enums
 # ---------------------------------------------------------------------------
 
@@ -126,7 +153,7 @@ class AgentResult(BaseModel):
     run_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     agent_name: str = ""
     output: str = ""
-    messages: List[Dict[str, Any]] = Field(default_factory=list)
+    messages: List[ArchonMessage] = Field(default_factory=list)
     trace: List[TraceStep] = Field(default_factory=list)
     total_cost: float = 0.0
     total_tokens: TokenUsage = Field(default_factory=TokenUsage)

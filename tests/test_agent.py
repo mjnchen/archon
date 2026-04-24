@@ -7,9 +7,9 @@ import pytest
 
 from archon.agent import Agent
 from archon.exceptions import BudgetExceeded, HandoverRequest, MaxIterationsExceeded
-from archon.observer import ArchonLogger
+from archon.observability import ArchonLogger
 from archon.tools import ToolRegistry
-from archon.types import AgentConfig
+from archon.types import AgentConfig, StepType
 
 from tests.conftest import make_completion_response
 
@@ -21,7 +21,7 @@ class TestReActLoop:
         agent = Agent(config=config)
 
         mock_response = make_completion_response(content="The answer is 42.")
-        with patch("litellm.acompletion", new_callable=AsyncMock, return_value=mock_response):
+        with patch("archon.llm.acompletion", new_callable=AsyncMock, return_value=mock_response):
             result = await agent.arun("What is the meaning of life?")
 
         assert result.output == "The answer is 42."
@@ -45,7 +45,7 @@ class TestReActLoop:
         # Second call: LLM responds with final answer
         final_response = make_completion_response(content="It's 22°C in Boston.")
 
-        with patch("litellm.acompletion", new_callable=AsyncMock, side_effect=[tool_call_response, final_response]):
+        with patch("archon.llm.acompletion", new_callable=AsyncMock, side_effect=[tool_call_response, final_response]):
             result = await agent.arun("What's the weather in Boston?")
 
         assert result.output == "It's 22°C in Boston."
@@ -72,7 +72,7 @@ class TestReActLoop:
         )
         agent = Agent(config=config, tools=tools)
 
-        with patch("litellm.acompletion", new_callable=AsyncMock, return_value=tool_call_response):
+        with patch("archon.llm.acompletion", new_callable=AsyncMock, return_value=tool_call_response):
             result = await agent.arun("Keep going")
 
         assert result.stop_reason == "max_iterations"
@@ -82,23 +82,11 @@ class TestReActLoop:
         config = AgentConfig(name="expensive", model="gpt-4o-mini", max_iterations=10, max_cost=0.0001)
         agent = Agent(config=config)
 
-        # Response with cost that exceeds budget
-        response = make_completion_response(content=None, tool_calls=[{
-            "id": "call_001",
-            "name": "handover_to_agent",
-            "arguments": json.dumps({"target_agent": "x"}),
-        }])
-        response._hidden_params = {"response_cost": 0.01}
+        expensive_resp = make_completion_response(content="Intermediate")
+        expensive_resp.cost = 1.0  # exceeds the 0.0001 budget
 
-        # The budget check should trigger before tool execution
-        final = make_completion_response(content="done")
-        with patch("litellm.acompletion", new_callable=AsyncMock, return_value=final):
-            # Use a response with high cost directly
-            with patch("litellm.acompletion", new_callable=AsyncMock) as mock_llm:
-                expensive_resp = make_completion_response(content="Intermediate")
-                expensive_resp._hidden_params = {"response_cost": 1.0}
-                mock_llm.return_value = expensive_resp
-                result = await agent.arun("Expensive call")
+        with patch("archon.llm.acompletion", new_callable=AsyncMock, return_value=expensive_resp):
+            result = await agent.arun("Expensive call")
 
         assert result.stop_reason == "budget_exceeded"
 
@@ -118,7 +106,7 @@ class TestHandover:
             }],
         )
 
-        with patch("litellm.acompletion", new_callable=AsyncMock, return_value=response):
+        with patch("archon.llm.acompletion", new_callable=AsyncMock, return_value=response):
             with pytest.raises(HandoverRequest) as exc_info:
                 await agent.arun("I need a specialist")
 
@@ -133,9 +121,10 @@ class TestObserver:
         agent = Agent(config=config, observer=observer)
 
         response = make_completion_response(content="Done.")
-        with patch("litellm.acompletion", new_callable=AsyncMock, return_value=response):
+        with patch("archon.llm.acompletion", new_callable=AsyncMock, return_value=response):
             result = await agent.arun("Hello")
 
-        # The observer should have trace steps from the agent's tool_result/invoke recording
-        # (LLM call steps come from the callback, which we don't trigger in unit tests)
+        trace = observer.get_trace(result.run_id)
+        assert len(trace) == 1
+        assert trace[0].step_type == StepType.LLM_CALL
         assert result.run_id is not None

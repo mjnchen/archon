@@ -6,11 +6,9 @@ import asyncio
 import json
 import logging
 import time
-import uuid
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, List, Optional
 
-import litellm
+from archon import llm as _llm
 
 from archon.exceptions import (
     ApprovalDenied,
@@ -19,7 +17,7 @@ from archon.exceptions import (
     MaxIterationsExceeded,
     ToolExecutionError,
 )
-from archon.observer import ArchonLogger
+from archon.observability import ArchonLogger
 from archon.state import AgentState
 from archon.tools import ToolRegistry
 from archon.types import (
@@ -32,9 +30,8 @@ from archon.types import (
 )
 
 if TYPE_CHECKING:
-    from archon.audit import AuditTrail
-    from archon.guardrails import GuardrailPipeline
-    from archon.hitl import HumanApprovalManager
+    from archon.observability import AuditTrail
+    from archon.safety import GuardrailPipeline, HumanApprovalManager
 
 logger = logging.getLogger(__name__)
 
@@ -140,57 +137,53 @@ class Agent:
                 # --- LLM call ---
                 openai_tools = self.tools.to_openai_tools(self.config.tool_names or None)
 
-                call_kwargs: Dict[str, Any] = {
-                    "model": self.config.model,
-                    "messages": state.messages,
-                }
-                if openai_tools:
-                    call_kwargs["tools"] = openai_tools
-                if self.config.temperature is not None:
-                    call_kwargs["temperature"] = self.config.temperature
-                if self.config.top_p is not None:
-                    call_kwargs["top_p"] = self.config.top_p
-
                 t0 = time.monotonic()
-                response = await litellm.acompletion(**call_kwargs)
+                response = await _llm.acompletion(
+                    model=self.config.model,
+                    messages=state.messages,
+                    tools=openai_tools or None,
+                    temperature=self.config.temperature,
+                    top_p=self.config.top_p,
+                )
                 t1 = time.monotonic()
 
+                if self.observer:
+                    self.observer.record_llm_step(
+                        run_id=run_id,
+                        messages=state.messages,
+                        response=response,
+                        duration_ms=(t1 - t0) * 1000,
+                        model=self.config.model,
+                    )
+
                 # Accumulate cost
-                resp_cost = getattr(response, "_hidden_params", {}).get("response_cost", 0) or 0
-                total_cost += resp_cost
-                usage = getattr(response, "usage", None)
-                if usage:
-                    total_tokens.prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
-                    total_tokens.completion_tokens += getattr(usage, "completion_tokens", 0) or 0
-                    total_tokens.total_tokens += getattr(usage, "total_tokens", 0) or 0
+                total_cost += response.cost
+                total_tokens.prompt_tokens += response.usage.prompt_tokens
+                total_tokens.completion_tokens += response.usage.completion_tokens
+                total_tokens.total_tokens += response.usage.total_tokens
 
                 # Budget check
                 if self.config.max_cost and total_cost > self.config.max_cost:
                     raise BudgetExceeded(total_cost, self.config.max_cost)
 
                 assistant_msg = response.choices[0].message
-                assistant_dict = assistant_msg.model_dump(exclude_none=True)
-                state.add_assistant(assistant_dict)
+                state.add_assistant(assistant_msg)
 
                 # --- Output guardrails ---
                 if self.guardrails and assistant_msg.content:
                     await self.guardrails.check_output(assistant_msg.content, self.tenant)
 
                 # --- Check for tool calls ---
-                tool_calls = getattr(assistant_msg, "tool_calls", None)
-                if not tool_calls:
+                if not assistant_msg.tool_calls:
                     # No tool calls → agent is done
                     return self._build_result(
                         state, run_id, total_cost, total_tokens, "completed"
                     )
 
                 # --- Execute each tool call ---
-                for tc in tool_calls:
-                    fn_name = tc.function.name
-                    try:
-                        fn_args = json.loads(tc.function.arguments)
-                    except json.JSONDecodeError:
-                        fn_args = {}
+                for tc in assistant_msg.tool_calls:
+                    fn_name = tc.name
+                    fn_args = tc.arguments
 
                     # Tool-call guardrails
                     if self.guardrails:
@@ -276,8 +269,8 @@ class Agent:
     ) -> AgentResult:
         last_content = ""
         for msg in reversed(state.messages):
-            if msg.get("role") == "assistant" and msg.get("content"):
-                last_content = msg["content"]
+            if msg.role == "assistant" and msg.content:
+                last_content = msg.content
                 break
 
         trace = self.observer.get_trace(run_id) if self.observer else []

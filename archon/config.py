@@ -7,13 +7,14 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from archon.guardrails import (
+from archon.safety import (
     ContentPolicyGuardrail,
     DangerousToolCallGuardrail,
     GuardrailPipeline,
     PIIDetector,
+    HumanApprovalManager,
 )
-from archon.hitl import ApprovalPolicy, AutoApproveHandler, HumanApprovalManager
+from archon.safety.hitl import AutoApproveHandler
 from archon.types import AgentConfig, ApprovalPolicy
 
 logger = logging.getLogger(__name__)
