@@ -1,7 +1,7 @@
 """Tests for Agent — ReAct loop, tool execution, handover, budget/iteration caps."""
 
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -11,7 +11,7 @@ from archon.observability import ArchonLogger
 from archon.tools import ToolRegistry
 from archon.types import AgentConfig, StepType
 
-from tests.conftest import make_completion_response
+from tests.conftest import make_completion_response, make_stream_patch
 
 
 class TestReActLoop:
@@ -21,7 +21,7 @@ class TestReActLoop:
         agent = Agent(config=config)
 
         mock_response = make_completion_response(content="The answer is 42.")
-        with patch("archon.llm.acompletion", new_callable=AsyncMock, return_value=mock_response):
+        with patch("archon.llm.astream", make_stream_patch(mock_response)):
             result = await agent.arun("What is the meaning of life?")
 
         assert result.output == "The answer is 42."
@@ -33,7 +33,6 @@ class TestReActLoop:
         config = AgentConfig(name="tool_user", model="gpt-4o-mini", max_iterations=5)
         agent = Agent(config=config, tools=sample_tools)
 
-        # First call: LLM requests a tool call
         tool_call_response = make_completion_response(
             content=None,
             tool_calls=[{
@@ -42,10 +41,9 @@ class TestReActLoop:
                 "arguments": json.dumps({"location": "Boston"}),
             }],
         )
-        # Second call: LLM responds with final answer
         final_response = make_completion_response(content="It's 22°C in Boston.")
 
-        with patch("archon.llm.acompletion", new_callable=AsyncMock, side_effect=[tool_call_response, final_response]):
+        with patch("archon.llm.astream", make_stream_patch(tool_call_response, final_response)):
             result = await agent.arun("What's the weather in Boston?")
 
         assert result.output == "It's 22°C in Boston."
@@ -72,7 +70,10 @@ class TestReActLoop:
         )
         agent = Agent(config=config, tools=tools)
 
-        with patch("archon.llm.acompletion", new_callable=AsyncMock, return_value=tool_call_response):
+        with patch(
+            "archon.llm.astream",
+            make_stream_patch(tool_call_response, tool_call_response),
+        ):
             result = await agent.arun("Keep going")
 
         assert result.stop_reason == "max_iterations"
@@ -85,7 +86,7 @@ class TestReActLoop:
         expensive_resp = make_completion_response(content="Intermediate")
         expensive_resp.cost = 1.0  # exceeds the 0.0001 budget
 
-        with patch("archon.llm.acompletion", new_callable=AsyncMock, return_value=expensive_resp):
+        with patch("archon.llm.astream", make_stream_patch(expensive_resp)):
             result = await agent.arun("Expensive call")
 
         assert result.stop_reason == "budget_exceeded"
@@ -106,12 +107,140 @@ class TestHandover:
             }],
         )
 
-        with patch("archon.llm.acompletion", new_callable=AsyncMock, return_value=response):
+        with patch("archon.llm.astream", make_stream_patch(response)):
             with pytest.raises(HandoverRequest) as exc_info:
                 await agent.arun("I need a specialist")
 
         assert exc_info.value.target_agent == "specialist"
         assert exc_info.value.summary == "Need help"
+
+
+class TestStreaming:
+    @pytest.mark.asyncio
+    async def test_should_yield_text_delta_and_complete_events(self):
+        from archon.types import (
+            CompleteEvent,
+            IterationEvent,
+            TextDeltaEvent,
+        )
+
+        config = AgentConfig(name="streamer", model="gpt-4o-mini", max_iterations=2)
+        agent = Agent(config=config)
+
+        response = make_completion_response(content="streamed answer")
+        events = []
+        with patch("archon.llm.astream", make_stream_patch(response)):
+            async for ev in agent.astream("hi"):
+                events.append(ev)
+
+        assert any(isinstance(e, IterationEvent) for e in events)
+        assert any(isinstance(e, TextDeltaEvent) and e.text == "streamed answer" for e in events)
+        assert isinstance(events[-1], CompleteEvent)
+        assert events[-1].result.output == "streamed answer"
+
+    @pytest.mark.asyncio
+    async def test_should_emit_tool_start_and_end_events(self, sample_tools: ToolRegistry):
+        from archon.types import ToolEndEvent, ToolStartEvent
+
+        config = AgentConfig(name="tool_streamer", model="gpt-4o-mini", max_iterations=3)
+        agent = Agent(config=config, tools=sample_tools)
+
+        tool_call_resp = make_completion_response(
+            content=None,
+            tool_calls=[{
+                "id": "call_001",
+                "name": "get_weather",
+                "arguments": json.dumps({"location": "Boston"}),
+            }],
+        )
+        final_resp = make_completion_response(content="It's nice.")
+
+        starts, ends = [], []
+        with patch("archon.llm.astream", make_stream_patch(tool_call_resp, final_resp)):
+            async for ev in agent.astream("weather?"):
+                if isinstance(ev, ToolStartEvent):
+                    starts.append(ev)
+                elif isinstance(ev, ToolEndEvent):
+                    ends.append(ev)
+
+        assert len(starts) == 1
+        assert starts[0].tool_name == "get_weather"
+        assert len(ends) == 1
+        assert ends[0].tool_call_id == "call_001"
+
+
+class TestHooks:
+    @pytest.mark.asyncio
+    async def test_should_fire_lifecycle_hooks(self, sample_tools: ToolRegistry):
+        from archon.hooks import AgentHooks
+
+        events: list[str] = []
+
+        class RecordingHooks(AgentHooks):
+            async def on_agent_start(self, agent, state):
+                events.append("agent_start")
+
+            async def on_llm_start(self, agent, messages):
+                events.append("llm_start")
+
+            async def on_llm_end(self, agent, response):
+                events.append("llm_end")
+
+            async def on_tool_start(self, agent, tool_call):
+                events.append(f"tool_start:{tool_call.name}")
+
+            async def on_tool_end(self, agent, tool_call, output):
+                events.append(f"tool_end:{tool_call.name}")
+
+            async def on_agent_end(self, agent, result):
+                events.append("agent_end")
+
+        config = AgentConfig(name="hooked", model="gpt-4o-mini", max_iterations=3)
+        agent = Agent(config=config, tools=sample_tools, hooks=RecordingHooks())
+
+        tool_call_resp = make_completion_response(
+            content=None,
+            tool_calls=[{
+                "id": "call_001",
+                "name": "get_weather",
+                "arguments": json.dumps({"location": "Boston"}),
+            }],
+        )
+        final_resp = make_completion_response(content="Done.")
+
+        with patch("archon.llm.astream", make_stream_patch(tool_call_resp, final_resp)):
+            await agent.arun("weather?")
+
+        assert events[0] == "agent_start"
+        assert events[-1] == "agent_end"
+        assert "tool_start:get_weather" in events
+        assert "tool_end:get_weather" in events
+        assert events.count("llm_start") == 2  # one per iteration
+        assert events.count("llm_end") == 2
+
+
+class TestSession:
+    @pytest.mark.asyncio
+    async def test_should_thread_history_across_runs(self):
+        from archon.session import Session
+
+        config = AgentConfig(name="chatter", model="gpt-4o-mini", max_iterations=2)
+        agent = Agent(config=config)
+        session = Session()
+
+        first = make_completion_response(content="Hello Alice.")
+        second = make_completion_response(content="Your name is Alice.")
+
+        with patch("archon.llm.astream", make_stream_patch(first)):
+            await agent.arun("My name is Alice.", session=session)
+        with patch("archon.llm.astream", make_stream_patch(second)):
+            result = await agent.arun("What's my name?", session=session)
+
+        # Session.state should accumulate user/assistant turns across runs.
+        roles = [m.role for m in session.state.messages]
+        assert roles.count("user") == 2
+        assert roles.count("assistant") == 2
+        assert result.output == "Your name is Alice."
 
 
 class TestObserver:
@@ -121,7 +250,7 @@ class TestObserver:
         agent = Agent(config=config, observer=observer)
 
         response = make_completion_response(content="Done.")
-        with patch("archon.llm.acompletion", new_callable=AsyncMock, return_value=response):
+        with patch("archon.llm.astream", make_stream_patch(response)):
             result = await agent.arun("Hello")
 
         trace = observer.get_trace(result.run_id)

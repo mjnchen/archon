@@ -212,3 +212,26 @@ class ToolRegistry:
         """Merge another registry's tools into this one."""
         self._tools.update(other._tools)
         self._callables.update(other._callables)
+
+    def register_raw(
+        self,
+        name: str,
+        fn: Callable,
+        *,
+        description: str = "",
+        parameters: Optional[Dict[str, Any]] = None,
+        timeout: Optional[float] = 30.0,
+        requires_approval: bool = False,
+    ) -> None:
+        """Register a tool with a pre-built JSON Schema, skipping introspection.
+
+        Used by integrations that already know their tools' shapes (e.g. MCP).
+        """
+        self._tools[name] = ToolDef(
+            name=name,
+            description=description,
+            parameters=parameters or {"type": "object", "properties": {}},
+            timeout=timeout,
+            requires_approval=requires_approval,
+        )
+        self._callables[name] = fn

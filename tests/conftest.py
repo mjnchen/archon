@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from archon.llm import LLMChoice, LLMResponse, LLMUsage
+from archon.llm import LLMChoice, LLMResponse, LLMStreamEvent, LLMUsage
 from archon.types import ArchonMessage, ArchonToolCall
 from archon.observability import ArchonLogger
 from archon.tools import ToolRegistry
@@ -55,6 +55,29 @@ def make_completion_response(
         usage=usage,
         cost=0.001,
     )
+
+
+def make_stream_patch(*responses: LLMResponse):
+    """Build a replacement for ``archon.llm.astream`` that yields events for
+    each of the given LLMResponses, in order.
+
+    Usage::
+
+        with patch("archon.llm.astream", make_stream_patch(resp1, resp2)):
+            result = await agent.arun(...)
+    """
+    it = iter(responses)
+
+    async def fake_astream(*_args, **_kwargs):
+        resp = next(it)
+        msg = resp.choices[0].message
+        if msg.content:
+            yield LLMStreamEvent(kind="text_delta", text=msg.content)
+        for tc in msg.tool_calls or []:
+            yield LLMStreamEvent(kind="tool_call_complete", tool_call=tc)
+        yield LLMStreamEvent(kind="done", usage=resp.usage, cost=resp.cost)
+
+    return fake_astream
 
 
 # ---------------------------------------------------------------------------

@@ -142,6 +142,12 @@ class AgentConfig(BaseModel):
     tool_names: List[str] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
+    # Provider-enforced JSON Schema for the final answer. When set, the
+    # adapter configures native constrained decoding (OpenAI/Gemini
+    # response_format; Anthropic tool-forcing) and AgentResult.final_output
+    # is populated with the parsed dict.
+    output_schema: Optional[Dict[str, Any]] = None
+
 
 # ---------------------------------------------------------------------------
 # Agent result
@@ -159,6 +165,9 @@ class AgentResult(BaseModel):
     total_tokens: TokenUsage = Field(default_factory=TokenUsage)
     iterations: int = 0
     stop_reason: str = "completed"
+
+    # Populated when AgentConfig.output_schema is set. dict matching that schema.
+    final_output: Optional[Dict[str, Any]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +232,58 @@ class AuditEvent(BaseModel):
     step_index: int = 0
     tenant: Optional[TenantContext] = None
     data: Dict[str, Any] = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Streaming events (yielded from Agent.astream)
+# ---------------------------------------------------------------------------
+
+class AgentEvent(BaseModel):
+    """Base class for events yielded from Agent.astream.
+
+    Subclasses discriminate on ``kind``. Use isinstance checks in consumers;
+    the base class is rarely yielded directly.
+    """
+
+    kind: str
+
+
+class IterationEvent(AgentEvent):
+    kind: Literal["iteration"] = "iteration"
+    n: int
+
+
+class TextDeltaEvent(AgentEvent):
+    kind: Literal["text_delta"] = "text_delta"
+    text: str
+
+
+class ToolCallEvent(AgentEvent):
+    """Emitted when the model's tool call has been fully assembled."""
+    kind: Literal["tool_call"] = "tool_call"
+    tool_call: "ArchonToolCall"
+
+
+class ToolStartEvent(AgentEvent):
+    """Emitted just before a tool is executed (after guardrails/HITL)."""
+    kind: Literal["tool_start"] = "tool_start"
+    tool_call_id: str
+    tool_name: str
+    arguments: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ToolEndEvent(AgentEvent):
+    kind: Literal["tool_end"] = "tool_end"
+    tool_call_id: str
+    tool_name: str
+    output: str
+    duration_ms: float
+
+
+class CompleteEvent(AgentEvent):
+    """Final event in a stream. Carries the full AgentResult."""
+    kind: Literal["complete"] = "complete"
+    result: "AgentResult"
 
 
 # ---------------------------------------------------------------------------
