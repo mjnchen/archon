@@ -11,10 +11,18 @@ Adding a new provider or model family:
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from archon.types import ArchonMessage
-from archon.llm._base import LLMAdapter, LLMChoice, LLMResponse, LLMUsage, estimate_cost
+from archon.llm._base import (
+    FINAL_OUTPUT_TOOL_NAME,
+    LLMAdapter,
+    LLMChoice,
+    LLMResponse,
+    LLMStreamEvent,
+    LLMUsage,
+    estimate_cost,
+)
 from archon.llm.openai import OpenAIChatAdapter, OpenAIReasoningAdapter, OpenAIResponsesAdapter
 from archon.llm.anthropic import AnthropicAdapter
 from archon.llm.gemini import GeminiAdapter
@@ -79,17 +87,52 @@ async def acompletion(
     tools: Optional[List[Dict[str, Any]]] = None,
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
+    output_schema: Optional[Dict[str, Any]] = None,
+    max_attempts: int = 2,
 ) -> LLMResponse:
-    """Resolve the adapter for *model* and return a normalised LLMResponse."""
-    return await _resolve(model).complete(model, messages, tools, temperature, top_p)
+    """Resolve the adapter for *model* and return a normalised LLMResponse.
+
+    Retries once by default on transient errors (rate limit, 5xx, connection).
+    Set ``max_attempts=1`` to disable retries.
+    """
+    from archon.retry import with_retry
+
+    adapter = _resolve(model)
+    return await with_retry(
+        lambda: adapter.complete(model, messages, tools, temperature, top_p, output_schema),
+        max_attempts=max_attempts,
+    )
+
+
+async def astream(
+    model: str,
+    messages: List[ArchonMessage],
+    tools: Optional[List[Dict[str, Any]]] = None,
+    temperature: Optional[float] = None,
+    top_p: Optional[float] = None,
+    output_schema: Optional[Dict[str, Any]] = None,
+) -> AsyncIterator[LLMStreamEvent]:
+    """Streaming counterpart to :func:`acompletion`.
+
+    Yields LLMStreamEvents as the provider emits them. Retries are *not*
+    applied here — a retry on a partial stream would be observable to the
+    caller and semantically confusing.
+    """
+    async for event in _resolve(model).astream(
+        model, messages, tools, temperature, top_p, output_schema
+    ):
+        yield event
 
 
 __all__ = [
     "acompletion",
+    "astream",
     "provider_base_url",
+    "FINAL_OUTPUT_TOOL_NAME",
     "LLMAdapter",
     "LLMChoice",
     "LLMResponse",
+    "LLMStreamEvent",
     "LLMUsage",
     "OpenAIChatAdapter",
     "OpenAIReasoningAdapter",
